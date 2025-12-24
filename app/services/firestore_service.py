@@ -33,16 +33,56 @@ class FirestoreService:
         Initialize Firestore client.
         Uses credentials from GOOGLE_APPLICATION_CREDENTIALS env var.
         """
+        self._db = None
+        self._users_collection = None
+        self._sessions_collection = None
+        self._function_calls_collection = None
+    
+    def _initialize(self):
+        """Lazy initialization of Firestore client."""
+        if self._db is not None:
+            return
+        
         # Set credentials path if specified in settings
         if settings.google_application_credentials:
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+            creds_path = settings.google_application_credentials
+            if not os.path.isabs(creds_path):
+                # Make path absolute relative to project root
+                creds_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), creds_path)
+            
+            if os.path.exists(creds_path):
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
         
-        self.db = firestore.Client(project=settings.google_cloud_project)
+        self._db = firestore.Client(project=settings.google_cloud_project)
         
         # Collection references
-        self.users_collection = self.db.collection("users")
-        self.sessions_collection = self.db.collection("sessions")
-        self.function_calls_collection = self.db.collection("function_calls")
+        self._users_collection = self._db.collection("users")
+        self._sessions_collection = self._db.collection("sessions")
+        self._function_calls_collection = self._db.collection("function_calls")
+    
+    @property
+    def db(self):
+        """Get Firestore database client (lazy-loaded)."""
+        self._initialize()
+        return self._db
+    
+    @property
+    def users_collection(self):
+        """Get users collection (lazy-loaded)."""
+        self._initialize()
+        return self._users_collection
+    
+    @property
+    def sessions_collection(self):
+        """Get sessions collection (lazy-loaded)."""
+        self._initialize()
+        return self._sessions_collection
+    
+    @property
+    def function_calls_collection(self):
+        """Get function_calls collection (lazy-loaded)."""
+        self._initialize()
+        return self._function_calls_collection
     
     # ==================== User Operations ====================
     
