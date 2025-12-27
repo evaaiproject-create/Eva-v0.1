@@ -8,6 +8,9 @@ This FastAPI application provides:
 - Firestore data persistence
 - Cross-device session synchronization
 - Dynamic function calling framework
+- Real-time speech (STT/TTS) services
+- WebSocket support for real-time communication
+- AI-powered conversation with memory management
 - RESTful API for all operations
 """
 from fastapi import FastAPI, HTTPException
@@ -16,7 +19,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 
 from app.config import settings
-from app.api import auth, users, sessions, functions
+from app.api import auth, users, sessions, functions, speech, conversation, memory, websocket
 
 
 @asynccontextmanager
@@ -33,6 +36,8 @@ async def lifespan(app: FastAPI):
     print(f"Google Cloud Project: {settings.google_cloud_project}")
     print(f"Max Users: {settings.max_users}")
     print(f"API Host: {settings.api_host}:{settings.api_port}")
+    print(f"STT Engine: {settings.stt_engine}")
+    print(f"TTS Engine: {settings.tts_engine}")
     print("=" * 60)
     
     yield
@@ -46,7 +51,8 @@ app = FastAPI(
     title="Eva Backend API",
     description=(
         "Backend API for Eva - A personal assistant inspired by JARVIS and Baymax. "
-        "Provides authentication, data persistence, cross-device sync, and function calling."
+        "Provides authentication, data persistence, cross-device sync, function calling, "
+        "real-time speech services (STT/TTS), AI-powered conversations, and memory management."
     ),
     version="0.1.0",
     lifespan=lifespan
@@ -66,6 +72,10 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(sessions.router)
 app.include_router(functions.router)
+app.include_router(speech.router)
+app.include_router(conversation.router)
+app.include_router(memory.router)
+app.include_router(websocket.router)
 
 
 # Root endpoint

@@ -3,7 +3,7 @@ Configuration management for Eva backend.
 Handles environment variables and application settings using Pydantic.
 """
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 import os
 
 
@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     - OAuth authentication
     - API server configuration
     - User limits and security settings
+    - Speech services (TTS/STT)
+    - AI services (OpenAI)
     """
     
     # Google Cloud Configuration
@@ -37,6 +39,13 @@ class Settings(BaseSettings):
     
     # Environment
     environment: str = "development"
+    
+    # Speech Services Configuration
+    tts_engine: str = "google"  # Options: google, custom
+    stt_engine: str = "whisper"  # Options: whisper, google
+    
+    # OpenAI Configuration
+    openai_api_key: Optional[str] = None
     
     class Config:
         env_file = ".env"
