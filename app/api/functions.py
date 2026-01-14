@@ -10,9 +10,8 @@ from app.utils.dependencies import get_current_user
 from app.services.function_service import function_registry
 from app.services.firestore_service import firestore_service
 
-
+# API Router for Functions
 router = APIRouter(prefix="/functions", tags=["Functions"])
-
 
 @router.get("/", response_model=Dict[str, Dict[str, Any]])
 async def list_functions(current_user: User = Depends(get_current_user)) -> Dict[str, Dict[str, Any]]:
@@ -34,6 +33,60 @@ async def list_functions(current_user: User = Depends(get_current_user)) -> Dict
     """
     return function_registry.list_functions()
 
+@router.post("/gemini-api", response_model=FunctionResponse)
+async def gemini_api_dynamic_function(
+    parameters: Dict[str, Any],
+    device_id: str = None,
+    current_user: User = Depends(get_current_user)
+) -> FunctionResponse:
+    """
+    Handles requests at /gemini-api for dynamic function execution.
+    
+    This endpoint allows clients to call functions dynamically, providing
+    only the `function_name` and `parameters` as input.
+
+    Example usage:
+    POST /functions/gemini-api
+    {
+        "function_name": "example_function",
+        "parameters": {"example_key": "example_value"}
+    }
+    
+    Args:
+        parameters: Dictionary containing function parameters
+        device_id: Device identifier (optional)
+        current_user: Authenticated user from dependency
+        
+    Returns:
+        FunctionResponse with execution results and metadata
+        
+    Raises:
+        HTTPException: If the function is invalid or execution fails
+    """
+    function_name = parameters.get("function_name")
+    if not function_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Function name is required"
+        )
+    
+    # Create a function call object
+    function_call = FunctionCall(
+        function_name=function_name,
+        parameters=parameters,
+        user_id=current_user.uid,
+        device_id=device_id
+    )
+    
+    # Execute the function call
+    try:
+        response = await function_registry.call(function_call)
+        return response
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Function execution failed: {str(e)}"
+        )
 
 @router.post("/call", response_model=FunctionResponse)
 async def call_function(
@@ -77,7 +130,6 @@ async def call_function(
     
     response = await function_registry.call(function_call)
     return response
-
 
 @router.get("/history", response_model=List[Dict[str, Any]])
 async def get_function_history(
