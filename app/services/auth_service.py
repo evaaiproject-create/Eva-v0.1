@@ -1,13 +1,38 @@
 """
-Authentication service using Google OAuth 2.0.
-Handles user authentication and JWT token management.
+================================================================================
+AUTHENTICATION SERVICE FOR EVA BACKEND
+================================================================================
+
+PURPOSE:
+    Handles all authentication-related operations:
+    - Google OAuth ID token verification
+    - JWT access token generation and validation
+    - User registration and login
+    - User limit enforcement
+
+SECURITY LAYERS:
+    Layer 1: Google ID Token Verification
+        - The Android app signs the user in with Google
+        - We verify the resulting ID token is legitimate and was
+          issued for OUR app (google_client_id must match)
+
+    Layer 2: JWT Access Tokens
+        - After verification, we issue our own JWT signed with API_SECRET_KEY
+        - All subsequent API calls use this JWT (not the Google token)
+        - Tokens expire after 7 days
+
+    Layer 3 (Future): Firebase App Check
+        - Prevents unauthorized clients (curl, Postman, scrapers)
+        - Only your real Android app can call the API
+
+================================================================================
 """
+
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
-import secrets
 
 from app.config import settings
 from app.models import User, UserRole
@@ -17,121 +42,176 @@ from app.services.firestore_service import firestore_service
 class AuthService:
     """
     Authentication service for Eva backend.
-    
+
     Handles:
     - Google OAuth token verification
     - JWT token generation and validation
     - User registration and login
     - User limit enforcement
     """
-    
+
     ALGORITHM = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
-    
+
     def __init__(self):
-        """Initialize authentication service."""
+        """
+        Initialize authentication service.
+
+        Loads the Google Web Client ID and JWT signing key from settings.
+        Validates that critical values are present at startup so failures
+        are caught immediately rather than at the first login attempt.
+        """
         self.google_client_id = settings.google_client_id
         self.secret_key = settings.api_secret_key
-    
+
+        # ---- Startup validation ------------------------------------------------
+        # Fail fast if critical auth config is missing. This surfaces
+        # misconfiguration at deploy time (Cloud Run logs) instead of at
+        # the first user request.
+        # ------------------------------------------------------------------------
+        if not self.google_client_id:
+            print(
+                "⚠️  WARNING: GOOGLE_CLIENT_ID is not set. "
+                "Google token verification will fail for all login attempts."
+            )
+
+        if self.secret_key == "ChangeThisSecretForProduction":
+            print(
+                "⚠️  WARNING: API_SECRET_KEY is using the default value. "
+                "Generate a production key with: "
+                "python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+
+    # ===========================================================================
+    # GOOGLE TOKEN VERIFICATION
+    # ===========================================================================
+
     async def verify_google_token(self, id_token_string: str) -> Optional[dict]:
         """
-        Verify Google ID token and extract user information.
-        
+        Verify a Google ID token and extract user information.
+
+        This is the critical security gate — it proves that the token was
+        genuinely issued by Google for a user who authenticated with our app.
+
         Args:
-            id_token_string: Google ID token from OAuth
-            
+            id_token_string: Google ID token from the Android app's OAuth flow
+
         Returns:
-            User info dict with 'sub' (user ID), 'email', 'name'
-            None if token is invalid
+            Dict with 'sub' (Google user ID), 'email', 'name', 'picture'
+            None if the token is invalid or was not issued for our client ID
         """
         try:
-            # Verify the token
             idinfo = id_token.verify_oauth2_token(
                 id_token_string,
                 requests.Request(),
-                self.google_client_id
+                self.google_client_id,
             )
-            
-            # Token is valid, return user info
+
             return {
-                "sub": idinfo["sub"],  # Google user ID
+                "sub": idinfo["sub"],               # Google user ID (stable, unique)
                 "email": idinfo.get("email"),
                 "name": idinfo.get("name"),
-                "picture": idinfo.get("picture")
+                "picture": idinfo.get("picture"),
             }
+
         except ValueError as e:
-            # Invalid token
-            print(f"Token verification failed: {e}")
+            print(f"Google token verification failed: {e}")
             return None
-    
-    def create_access_token(self, data: dict, expires_delta: Optional[timedelta] = None) -> str:
+
+    # ===========================================================================
+    # JWT TOKEN MANAGEMENT
+    # ===========================================================================
+
+    def create_access_token(
+        self,
+        data: dict,
+        expires_delta: Optional[timedelta] = None,
+    ) -> str:
         """
-        Create a JWT access token.
-        
+        Create a signed JWT access token.
+
+        The token encodes the user's ID and email so we can identify them
+        on every subsequent API request without hitting Google again.
+
         Args:
-            data: Data to encode in the token
-            expires_delta: Optional custom expiration time
-            
+            data: Payload to encode (must include 'sub' for user ID)
+            expires_delta: Custom lifetime; defaults to 7 days
+
         Returns:
-            Encoded JWT token string
+            Encoded JWT string
         """
         to_encode = data.copy()
-        
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(minutes=self.ACCESS_TOKEN_EXPIRE_MINUTES)
-        
+
+        expire = datetime.utcnow() + (
+            expires_delta
+            if expires_delta
+            else timedelta(minutes=self.ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
         to_encode.update({"exp": expire})
-        encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.ALGORITHM)
-        
-        return encoded_jwt
-    
+
+        return jwt.encode(to_encode, self.secret_key, algorithm=self.ALGORITHM)
+
     def decode_access_token(self, token: str) -> Optional[dict]:
         """
-        Decode and verify JWT access token.
-        
+        Decode and verify a JWT access token.
+
         Args:
-            token: JWT token string
-            
+            token: JWT string from the Authorization header
+
         Returns:
-            Decoded token payload or None if invalid
+            Decoded payload dict, or None if the token is invalid / expired
         """
         try:
-            payload = jwt.decode(token, self.secret_key, algorithms=[self.ALGORITHM])
-            return payload
+            return jwt.decode(token, self.secret_key, algorithms=[self.ALGORITHM])
         except JWTError:
             return None
-    
-    async def register_user(self, id_token_string: str, device_id: Optional[str] = None) -> Tuple[User, str]:
+
+    # ===========================================================================
+    # REGISTRATION
+    # ===========================================================================
+
+    async def register_user(
+        self,
+        id_token_string: str,
+        device_id: Optional[str] = None,
+    ) -> Tuple[User, str]:
         """
-        Register a new user with Google OAuth.
-        
+        Register a new user with a Google ID token.
+
+        Flow:
+            1. Verify the Google token → proves identity
+            2. Check the user doesn't already exist → prevents duplicates
+            3. Enforce user limit → personal-project guardrail
+            4. Create user in Firestore
+            5. Issue a JWT access token
+
         Args:
-            id_token_string: Google ID token from OAuth
-            device_id: Optional device identifier
-            
+            id_token_string: Google ID token from the Android app
+            device_id: Optional device identifier for cross-device sync
+
         Returns:
-            Tuple of (User object, access token)
-            
+            Tuple of (User object, JWT access token string)
+
         Raises:
-            ValueError: If token is invalid or user limit reached
+            ValueError: If token is invalid, user exists, or limit reached
         """
         # Verify Google token
         google_user = await self.verify_google_token(id_token_string)
         if not google_user:
             raise ValueError("Invalid Google ID token")
-        
+
         # Check if user already exists
         existing_user = await firestore_service.get_user(google_user["sub"])
         if existing_user:
             raise ValueError("User already registered")
-        
+
         # Check user limit
         user_count = await firestore_service.count_users()
         if user_count >= settings.max_users:
-            raise ValueError(f"Maximum user limit ({settings.max_users}) reached")
-        
+            raise ValueError(
+                f"Maximum user limit ({settings.max_users}) reached"
+            )
+
         # Create new user
         user = User(
             uid=google_user["sub"],
@@ -140,28 +220,45 @@ class AuthService:
             role=UserRole.USER,
             created_at=datetime.utcnow(),
             last_login=datetime.utcnow(),
-            devices=[device_id] if device_id else []
+            devices=[device_id] if device_id else [],
         )
-        
+
         # Save to Firestore
         await firestore_service.create_user(user)
-        
+
         # Generate access token
-        access_token = self.create_access_token({"sub": user.uid, "email": user.email})
-        
+        access_token = self.create_access_token(
+            {"sub": user.uid, "email": user.email}
+        )
+
         return user, access_token
-    
-    async def login_user(self, id_token_string: str, device_id: Optional[str] = None) -> Tuple[User, str]:
+
+    # ===========================================================================
+    # LOGIN
+    # ===========================================================================
+
+    async def login_user(
+        self,
+        id_token_string: str,
+        device_id: Optional[str] = None,
+    ) -> Tuple[User, str]:
         """
-        Login existing user with Google OAuth.
-        
+        Login an existing user with a Google ID token.
+
+        Flow:
+            1. Verify the Google token
+            2. Look up the user in Firestore
+            3. Update last-login timestamp
+            4. Register device if new
+            5. Issue a fresh JWT access token
+
         Args:
-            id_token_string: Google ID token from OAuth
+            id_token_string: Google ID token from the Android app
             device_id: Optional device identifier
-            
+
         Returns:
-            Tuple of (User object, access token)
-            
+            Tuple of (User object, JWT access token string)
+
         Raises:
             ValueError: If token is invalid or user not found
         """
@@ -169,44 +266,54 @@ class AuthService:
         google_user = await self.verify_google_token(id_token_string)
         if not google_user:
             raise ValueError("Invalid Google ID token")
-        
+
         # Get user from Firestore
         user = await firestore_service.get_user(google_user["sub"])
         if not user:
             raise ValueError("User not found. Please register first.")
-        
+
         # Update last login
-        await firestore_service.update_user(user.uid, {"last_login": datetime.utcnow()})
-        
+        await firestore_service.update_user(
+            user.uid, {"last_login": datetime.utcnow()}
+        )
+
         # Add device if provided and not already registered
         if device_id:
             await firestore_service.add_device_to_user(user.uid, device_id)
-        
+
         # Generate access token
-        access_token = self.create_access_token({"sub": user.uid, "email": user.email})
-        
+        access_token = self.create_access_token(
+            {"sub": user.uid, "email": user.email}
+        )
+
         return user, access_token
-    
+
+    # ===========================================================================
+    # TOKEN → USER LOOKUP
+    # ===========================================================================
+
     async def get_current_user(self, token: str) -> Optional[User]:
         """
-        Get current user from JWT token.
-        
+        Resolve a JWT access token to a User object.
+
+        Used by the /auth/verify endpoint and internal helpers.
+
         Args:
             token: JWT access token
-            
+
         Returns:
-            User object or None if token invalid
+            User object, or None if token is invalid
         """
         payload = self.decode_access_token(token)
         if not payload:
             return None
-        
+
         user_id = payload.get("sub")
         if not user_id:
             return None
-        
+
         return await firestore_service.get_user(user_id)
 
 
-# Global auth service instance
+# Global singleton — used by all API routes
 auth_service = AuthService()
