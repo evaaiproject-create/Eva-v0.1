@@ -265,12 +265,16 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
-    # Run the application
-    # This is used for local development
+    # 1. Use the system's PORT variable (Google Cloud forces 8080)
+    # 2. Fall back to settings.api_port only if PORT is missing
+    current_port = int(os.environ.get("PORT", settings.api_port))
+
     uvicorn.run(
         "main:app",
-        host=settings.api_host,
-        port=settings.api_port,
-        reload=not settings.is_production,  # Auto-reload in development
+        host="0.0.0.0",   # MUST be 0.0.0.0 for Cloud Run
+        port=current_port,
+        reload=False      # Must be False in production
     )
+
