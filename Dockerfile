@@ -21,8 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose port
-EXPOSE 8080 # Cloud Run default port
+EXPOSE 8080
 
 # Run the application
 # The PORT environment variable is automatically set by Cloud Run.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# This allows Docker to actually read the $PORT variable provided by Cloud Run
+CMD uvicorn main:app --host 0.0.0.0 --port $PORT
