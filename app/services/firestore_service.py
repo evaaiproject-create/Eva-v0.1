@@ -23,8 +23,8 @@ class FirestoreService:
         This is called automatically by every method before performing an operation.
         """
         if self.db is None:
-            # If settings.google_cloud_project is empty, firestore.Client() 
-            # will attempt to auto-detect from the environment.
+            # Explicitly point to the "default" database (no parentheses)
+            # to match your Google Cloud configuration.
             self.db = firestore.Client(
                 project=settings.google_cloud_project,
                 database="default"
@@ -193,6 +193,14 @@ class FirestoreService:
         """Create or update user details."""
         self._initialize()
         self.db.collection("users").document(user_id).set(user_data)
+
+    async def count_users(self) -> int:
+        """Count the total number of users in the database."""
+        self._initialize()
+        query = self.db.collection("users").count()
+        result = query.get()
+        # Aggregation queries return a slightly different structure
+        return result[0][0].value
 
 # Create the singleton instance used by the rest of the app
 firestore_service = FirestoreService()
