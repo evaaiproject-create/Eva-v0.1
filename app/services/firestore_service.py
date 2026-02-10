@@ -10,21 +10,11 @@ class FirestoreService:
     """
 
     def __init__(self):
-        """
-        Initialize the service. 
-        We use lazy initialization for the db client to prevent 
-        crashes during the import phase.
-        """
         self.db = None
 
     def _initialize(self):
-        """
-        Connects to Firestore using the project ID from settings.
-        This is called automatically by every method before performing an operation.
-        """
         if self.db is None:
-            # Explicitly point to the "default" database (no parentheses)
-            # to match your Google Cloud configuration.
+            # Connect to your "default" database
             self.db = firestore.Client(
                 project=settings.google_cloud_project,
                 database="default"
@@ -34,21 +24,10 @@ class FirestoreService:
     # CHAT MESSAGE OPERATIONS
     # ================================================================================
 
-    async def save_chat_message(
-        self,
-        user_id: str,
-        conversation_id: str,
-        message_id: str,
-        content: str,
-        role: str,
-        timestamp: datetime
-    ) -> None:
-        """Save a chat message to Firestore."""
+    async def save_chat_message(self, user_id: str, conversation_id: str, message_id: str, content: str, role: str, timestamp: datetime) -> None:
         self._initialize()
-        
         doc_id = f"{user_id}_{conversation_id}_{message_id}"
         doc_ref = self.db.collection("chat_messages").document(doc_id)
-        
         doc_ref.set({
             "user_id": user_id,
             "conversation_id": conversation_id,
@@ -58,23 +37,12 @@ class FirestoreService:
             "timestamp": timestamp.isoformat()
         })
 
-    async def get_chat_messages(
-        self,
-        user_id: str,
-        conversation_id: str,
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
-        """Get chat messages for a conversation, ordered by timestamp."""
+    async def get_chat_messages(self, user_id: str, conversation_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         self._initialize()
-        
-        query = (
-            self.db.collection("chat_messages")
-            .where("user_id", "==", user_id)
-            .where("conversation_id", "==", conversation_id)
-            .order_by("timestamp")
-            .limit(limit)
-        )
-        
+        query = (self.db.collection("chat_messages")
+                 .where("user_id", "==", user_id)
+                 .where("conversation_id", "==", conversation_id)
+                 .order_by("timestamp").limit(limit))
         docs = query.stream()
         return [doc.to_dict() for doc in docs]
 
@@ -82,19 +50,10 @@ class FirestoreService:
     # CONVERSATION OPERATIONS
     # ================================================================================
 
-    async def create_conversation(
-        self,
-        user_id: str,
-        conversation_id: str,
-        title: str,
-        created_at: datetime
-    ) -> None:
-        """Create a new conversation record."""
+    async def create_conversation(self, user_id: str, conversation_id: str, title: str, created_at: datetime) -> None:
         self._initialize()
-        
         doc_id = f"{user_id}_{conversation_id}"
         doc_ref = self.db.collection("conversations").document(doc_id)
-        
         doc_ref.set({
             "user_id": user_id,
             "conversation_id": conversation_id,
@@ -104,26 +63,12 @@ class FirestoreService:
             "message_count": 0
         })
 
-    async def update_conversation_metadata(
-        self,
-        user_id: str,
-        conversation_id: str,
-        last_message: str
-    ) -> None:
-        """Update metadata like timestamps and message count."""
+    async def update_conversation_metadata(self, user_id: str, conversation_id: str, last_message: str) -> None:
         self._initialize()
-        
         doc_id = f"{user_id}_{conversation_id}"
         doc_ref = self.db.collection("conversations").document(doc_id)
-        
         if not doc_ref.get().exists:
-            await self.create_conversation(
-                user_id=user_id,
-                conversation_id=conversation_id,
-                title=last_message[:30] + "..." if len(last_message) > 30 else last_message,
-                created_at=datetime.utcnow()
-            )
-        
+            await self.create_conversation(user_id, conversation_id, last_message[:30], datetime.utcnow())
         doc_ref.update({
             "updated_at": datetime.utcnow().isoformat(),
             "message_count": firestore.Increment(1),
@@ -131,76 +76,68 @@ class FirestoreService:
         })
 
     async def get_user_conversations(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get all conversations for a user, newest first."""
         self._initialize()
-        
-        query = (
-            self.db.collection("conversations")
-            .where("user_id", "==", user_id)
-            .order_by("updated_at", direction=firestore.Query.DESCENDING)
-        )
-        
+        query = (self.db.collection("conversations")
+                 .where("user_id", "==", user_id)
+                 .order_by("updated_at", direction=firestore.Query.DESCENDING))
         docs = query.stream()
-        
         conversations = []
         for doc in docs:
             data = doc.to_dict()
             data["created_at"] = datetime.fromisoformat(data["created_at"])
             data["updated_at"] = datetime.fromisoformat(data["updated_at"])
             conversations.append(data)
-        
         return conversations
 
     async def delete_conversation(self, user_id: str, conversation_id: str) -> None:
-        """Permanently delete a conversation and all its messages."""
         self._initialize()
-        
-        conv_doc_id = f"{user_id}_{conversation_id}"
-        self.db.collection("conversations").document(conv_doc_id).delete()
-        
-        messages_query = (
-            self.db.collection("chat_messages")
-            .where("user_id", "==", user_id)
-            .where("conversation_id", "==", conversation_id)
-        )
-        
+        self.db.collection("conversations").document(f"{user_id}_{conversation_id}").delete()
+        messages_query = self.db.collection("chat_messages").where("user_id", "==", user_id).where("conversation_id", "==", conversation_id)
         batch = self.db.batch()
-        docs = messages_query.stream()
-        
         count = 0
-        for doc in docs:
+        for doc in messages_query.stream():
             batch.delete(doc.reference)
             count += 1
             if count >= 500:
                 batch.commit()
                 batch = self.db.batch()
                 count = 0
-        
-        if count > 0:
-            batch.commit()
+        if count > 0: batch.commit()
 
     # ================================================================================
     # USER OPERATIONS
     # ================================================================================
 
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve user details by ID."""
         self._initialize()
         doc = self.db.collection("users").document(user_id).get()
         return doc.to_dict() if doc.exists else None
 
-    async def create_user(self, user_id: str, user_data: Dict[str, Any]) -> None:
-        """Create or update user details."""
+    async def create_user(self, user: Any) -> None:
+        """Create a new user. Expects a User model object."""
         self._initialize()
+        # Convert User model to dict
+        user_data = user.dict() if hasattr(user, "dict") else user
+        user_id = user_data.get("uid")
         self.db.collection("users").document(user_id).set(user_data)
 
+    async def update_user(self, user_id: str, data: Dict[str, Any]) -> None:
+        """Update existing user data (like last_login)."""
+        self._initialize()
+        self.db.collection("users").document(user_id).update(data)
+
+    async def add_device_to_user(self, user_id: str, device_id: str) -> None:
+        """Add a device ID to the user's list of devices if not present."""
+        self._initialize()
+        self.db.collection("users").document(user_id).update({
+            "devices": firestore.ArrayUnion([device_id])
+        })
+
     async def count_users(self) -> int:
-        """Count the total number of users in the database."""
         self._initialize()
         query = self.db.collection("users").count()
         result = query.get()
-        # Aggregation queries return a slightly different structure
         return result[0][0].value
 
-# Create the singleton instance used by the rest of the app
+# Singleton instance
 firestore_service = FirestoreService()
